@@ -23,15 +23,6 @@ struct Options {
   int loop = 0;  // 0 means no loop, >0 means loop for N seconds
 };
 
-template <typename T, typename U>
-T lexical_cast(const U& value) {
-  std::stringstream ss;
-  ss << value;
-  T result;
-  ss >> result;
-  return result;
-}
-
 std::string GetLocalTime() {
   auto now = std::chrono::system_clock::now();
   auto time = std::chrono::system_clock::to_time_t(now);
@@ -142,7 +133,7 @@ std::string ModeToString(mode_t mode) {
   if (mode & FASYNC) mode_str[9] = 'f';
   if (mode & O_DIRECT) mode_str[10] = 'd';
   if (mode & O_LARGEFILE) mode_str[11] = 'l';
-  if (mode & O_DIRECTORY) mode_str[12] = 'y';
+  if (mode & O_DIRECTORY) mode_str[12] = 'Y';
   if (mode & O_NOFOLLOW) mode_str[13] = 'F';
   if (mode & O_NOATIME) mode_str[14] = 'A';
   if (mode & O_CLOEXEC) mode_str[15] = 'e';
@@ -154,9 +145,8 @@ struct FdInfo {
   int fd;
   std::string path;
   std::string mode;
-  size_t size;
+  ssize_t size;
   size_t pos;
-  bool regular_file;
 };
 
 struct ProcInfo;
@@ -191,19 +181,21 @@ ProcInfoPtr ReadProcFs(pid_t pid, const Options& options) {
     std::vector<std::string> fds = file_util::ScanDirectory("/proc/" + std::to_string(pid) + "/fd");
     for (const auto& fd : fds) {
       FdInfo fd_info;
-      fd_info.fd = lexical_cast<int>(fd);
+      fd_info.fd = std::stoi(fd);
       fd_info.path = file_util::ReadLink("/proc/" + std::to_string(pid) + "/fd/" + fd);
       if (options.regular_files && !file_util::IsFile(fd_info.path)) {
         continue;
       }
-      fd_info.regular_file = file_util::IsFile(fd_info.path);
       fd_info.size = file_util::GetFileSize(fd_info.path);
+      if (fd_info.size < 0) {
+        fd_info.size = 0;  // Do not report error, just treat it as size 0
+      }
       std::ifstream ifs("/proc/" + std::to_string(pid) + "/fdinfo/" + fd);
       if (ifs) {
         std::string line;
         while (std::getline(ifs, line)) {
           if (line.find("pos:") == 0) {
-            fd_info.pos = lexical_cast<size_t>(line.substr(4));
+            fd_info.pos = std::stoull(Trim(line.substr(4)));
           } else if (line.find("flags:") == 0) {
             std::string oct_flags = Trim(line.substr(6));
             std::istringstream iss(oct_flags);
@@ -225,7 +217,7 @@ ProcInfoPtr ReadProcFs(pid_t pid, const Options& options) {
       std::string line;
       while (std::getline(ifs, line)) {
         if (line.find("PPid:") == 0) {
-          proc_info->ppid = lexical_cast<pid_t>(line.substr(5));
+          proc_info->ppid = std::stoull(Trim(line.substr(5)));
         }
       }
     } else {
@@ -243,7 +235,7 @@ void PrintProcInfo(std::ostream& os, const ProcInfo& proc_info, const Options& o
     os << indent_str << "  fds:" << std::endl;
   }
   for (const auto& fd : proc_info.fds) {
-    float percent = (fd.size == 0) ? 0.0 : (static_cast<float>(fd.pos) / fd.size) * 100.0;
+    float percent = (fd.size <= 0) ? 0.0 : (static_cast<float>(fd.pos) / fd.size) * 100.0;
     std::ostringstream percent_oss;
     percent_oss << std::fixed << std::setw(5) << std::setprecision(1) << percent;
 
@@ -267,11 +259,11 @@ void PrintProcInfo(std::ostream& os, const ProcInfo& proc_info, const Options& o
   }
 }
 
-std::vector<std::string> ListUserProcFs() {
-  std::vector<std::string> result;
+std::vector<pid_t> ListUserProcFs() {
+  std::vector<pid_t> result;
   for (const auto& proc : file_util::ScanDirectory("/proc")) {
     if (proc.find_first_not_of("0123456789") == std::string::npos && file_util::IsOwned("/proc/" + proc)) {
-      result.push_back(proc);
+      result.push_back(std::stoull(proc));
     }
   }
   return result;
@@ -297,14 +289,13 @@ void Prune(std::map<pid_t, ProcInfoPtr>& proc_map) {
   }
 }
 
-void Impl(std::ostream& os, const Options& options, std::vector<std::string> args) {
-  if (args.empty()) {
-    args = ListUserProcFs();
+void Impl(std::ostream& os, const Options& options, std::vector<pid_t> pids) {
+  if (pids.empty()) {
+    pids = ListUserProcFs();
   }
 
   std::map<pid_t, ProcInfoPtr> proc_map;
-  for (const auto& arg : args) {
-    pid_t pid = lexical_cast<pid_t>(arg);
+  for (const auto& pid : pids) {
     ProcInfoPtr proc_info = ReadProcFs(pid, options);
     if (proc_info) {
       proc_map[pid] = proc_info;
@@ -383,7 +374,19 @@ int main(int argc, char* argv[]) {
         break;
 
       case 'l':
-        options.loop = lexical_cast<int>(optarg);
+        try {
+          options.loop = std::stoi(optarg);
+          if (options.loop < 0) {
+            std::cerr << "Invalid loop value: " << options.loop << ", must be non-negative." << std::endl;
+            return 1;
+          }
+        } catch (const std::invalid_argument&) {
+          std::cerr << "Invalid loop value: " << optarg << ", not a number." << std::endl;
+          return 1;
+        } catch (const std::out_of_range&) {
+          std::cerr << "Invalid loop value: " << optarg << ", out of range." << std::endl;
+          return 1;
+        }
         break;
 
       case 'h':
@@ -395,9 +398,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
   }
-  std::vector<std::string> args;
+  std::vector<pid_t> args;
   for (int i = optind; i < argc; ++i) {
-    args.push_back(argv[i]);
+    try {
+      args.push_back(std::stoll(argv[i]));
+    } catch (const std::invalid_argument&) {
+      std::cerr << "Invalid PID: " << argv[i] << ", not a number." << std::endl;
+      return 1;
+    } catch (const std::out_of_range&) {
+      std::cerr << "Invalid PID: " << argv[i] << ", out of range." << std::endl;
+      return 1;
+    }
   }
 
   if (options.loop > 0) {

@@ -27,13 +27,20 @@ std::vector<std::string> ScanDirectory(const std::string& path) {
 }
 
 std::string ReadLink(const std::string& path) {
-  char buffer[PATH_MAX];
-  ssize_t len = readlink(path.c_str(), buffer, sizeof(buffer) - 1);
-  if (len < 0) {
-    return "";
+  ssize_t len = 1024;
+  std::vector<char> buffer(len);
+  while (true) {
+    ssize_t n = readlink(path.c_str(), buffer.data(), len - 1);
+    if (n < 0) {
+      return "";
+    }
+    if (n < len - 1) {
+      buffer[n] = '\0';
+      return std::string(buffer.data(), n);
+    }
+    len *= 2;
+    buffer.resize(len);
   }
-  buffer[len] = '\0';
-  return std::string(buffer);
 }
 
 bool IsFile(const std::string& path) {
@@ -51,12 +58,12 @@ bool IsOwned(const std::string& path) {
   return (stat(path.c_str(), &st) == 0 && st.st_uid == getuid());
 }
 
-size_t GetFileSize(const std::string& path) {
+ssize_t GetFileSize(const std::string& path) {
   struct stat st;
   if (stat(path.c_str(), &st) == 0) {
     return st.st_size;
   }
-  return 0;
+  return -1;
 }
 
 }  // namespace file_util

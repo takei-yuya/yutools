@@ -25,6 +25,7 @@ install: release
 
 .PHONY: configure
 configure:
+	@mkdir -p build
 	@echo PREFIX=$(PREFIX) > build/config.mk
 	@echo CXXFLAGS=$(CXXFLAGS) >> build/config.mk
 	@echo CC=$(CC) >> build/config.mk
@@ -49,7 +50,7 @@ build/release/%.o: src/%.cpp
 	$(COMPILE.cpp) $(OUTPUT_OPTION) $(release_options) $<
 
 build/release/%: build/release/%_main.o
-	@mkdir -p build/$(1)
+	@mkdir -p build/release
 	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) $(release_options) -o $@
 
 build/debug/%.o: src/%.cpp

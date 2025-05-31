@@ -13,7 +13,7 @@ std::string ReadLink(const std::string& path);
 bool IsFile(const std::string& path);
 bool IsDirectory(const std::string& path);
 bool IsOwned(const std::string& path);
-size_t GetFileSize(const std::string& path);
+ssize_t GetFileSize(const std::string& path);
 
 }  // namespace file_util
 
